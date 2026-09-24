@@ -1,160 +1,194 @@
+import { useEffect, useState, type ReactNode } from "react";
 import "./styles.css";
+import type { Role } from "./data/types";
+import { DEFAULT_ATTENDING, DEFAULT_RESIDENT, ROLE_LABELS } from "./data/constants";
+import {
+  listRecords,
+  readRole,
+  resetToSeed,
+  STORE_EVENT,
+  writeRole,
+} from "./storage/store";
+import { ToastHost, notify } from "./components/Toast";
+import { CaseList } from "./pages/CaseList";
+import { CaseEdit } from "./pages/CaseEdit";
+import { CaseDetail } from "./pages/CaseDetail";
+import { Stats } from "./pages/Stats";
+import { Rules } from "./pages/Rules";
 
-const project = {
-  "id": "hxwl-04",
-  "port": 5104,
-  "title": "牙科根管治疗",
-  "subtitle": "按牙位组织根管步骤、工作长度与复诊计划",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#0369a1",
-    "#7c3aed",
-    "#ea580c"
-  ],
-  "domain": "牙体牙髓",
-  "users": [
-    "牙科医生",
-    "助理",
-    "前台复诊协调员"
-  ],
-  "metrics": [
-    "待复诊",
-    "已充填",
-    "平均工作长度",
-    "封药病例"
-  ],
-  "filters": [
-    "开髓",
-    "测长",
-    "封药",
-    "充填"
-  ],
-  "fields": [
-    "牙位",
-    "开髓",
-    "测长",
-    "根管预备",
-    "冲洗",
-    "封药",
-    "主尖锉号"
-  ],
-  "records": [
-    [
-      "#36",
-      "慢性根尖周炎",
-      "封药",
-      "MB 19.5mm，主尖锉#30"
-    ],
-    [
-      "#11",
-      "外伤后变色",
-      "充填",
-      "单根管，冷侧压完成"
-    ],
-    [
-      "#46",
-      "急性牙髓炎",
-      "测长",
-      "近中双根管需复诊"
-    ]
-  ]
-};
+type Route =
+  | { name: "list" }
+  | { name: "new" }
+  | { name: "edit"; id: string }
+  | { name: "detail"; id: string }
+  | { name: "stats" }
+  | { name: "rules" };
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
-  );
+function parseHash(hash: string): Route {
+  const path = hash.replace(/^#/, "") || "/";
+  const seg = path.split("/").filter(Boolean);
+  if (seg[0] === "cases") {
+    if (seg[1] === "new") return { name: "new" };
+    if (seg[1]) {
+      if (seg[2] === "edit") return { name: "edit", id: seg[1] };
+      return { name: "detail", id: seg[1] };
+    }
+  }
+  if (seg[0] === "stats") return { name: "stats" };
+  if (seg[0] === "rules") return { name: "rules" };
+  return { name: "list" };
 }
 
-function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+const NAV: Array<{ href: string; label: string; route: string }> = [
+  { href: "#/", label: "病例复核台", route: "list" },
+  { href: "#/stats", label: "完成统计", route: "stats" },
+  { href: "#/rules", label: "复核规则", route: "rules" },
+];
+
+export default function App() {
+  const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
+  const [role, setRole] = useState<Role>(() => readRole());
+  // 存储变更（提交/复核）后重渲染页面；路由不变时同样生效
+  const [storeTick, setStoreTick] = useState(0);
+
+  useEffect(() => {
+    const onHash = () => {
+      setRoute(parseHash(window.location.hash));
+      window.scrollTo(0, 0);
+    };
+    const onStore = () => setStoreTick((t) => t + 1);
+    window.addEventListener("hashchange", onHash);
+    window.addEventListener(STORE_EVENT, onStore);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener(STORE_EVENT, onStore);
+    };
+  }, []);
+  void storeTick;
+
+  const switchRole = (next: Role) => {
+    setRole(next);
+    writeRole(next);
+    notify(
+      `已切换为${ROLE_LABELS[next]}（${next === "attending" ? DEFAULT_ATTENDING : DEFAULT_RESIDENT}）`,
+      "info",
+    );
+  };
+
+  const resetDemo = () => {
+    if (window.confirm("确定清空当前数据并恢复演示病例？该操作不可撤销。")) {
+      resetToSeed();
+      notify("已恢复演示数据", "success");
+      window.location.hash = "#/";
+      setRoute({ name: "list" });
+    }
+  };
+
+  let body: ReactNode;
+  if (route.name === "list") {
+    body = <CaseList role={role} />;
+  } else if (route.name === "stats") {
+    body = <Stats />;
+  } else if (route.name === "rules") {
+    body = <Rules />;
+  } else if (route.name === "new") {
+    if (role !== "resident") {
+      body = (
+        <section className="panel lock-panel">
+          <h2>当前为主诊医生视角</h2>
+          <p>病例登记由住院医师完成，请在右上角切换身份后再登记。</p>
+        </section>
+      );
+    } else {
+      body = <CaseEdit record={null} />;
+    }
+  } else if (route.name === "edit") {
+    body = <EditRoute id={route.id} />;
+  } else {
+    body = <DetailRoute id={route.id} role={role} />;
+  }
 
   return (
     <main className="app-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
-        </div>
-        <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
-        </div>
-      </section>
-
-      <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">牙</span>
           <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
+            <h1>根管治疗病例复核台</h1>
+            <p>牙体牙髓科 · 工作长度逐颗确认 · 器械清点闭环</p>
           </div>
-          <button>导出摘要</button>
         </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
+        <div className="role-switch" role="group" aria-label="角色切换">
+          <button
+            className={role === "resident" ? "role active" : "role"}
+            onClick={() => switchRole("resident")}
+          >
+            {ROLE_LABELS.resident}
+          </button>
+          <button
+            className={role === "attending" ? "role active" : "role"}
+            onClick={() => switchRole("attending")}
+          >
+            {ROLE_LABELS.attending}
+          </button>
         </div>
-      </section>
+      </header>
+
+      <nav className="mainnav">
+        {NAV.map((n) => (
+          <a
+            key={n.route}
+            href={n.href}
+            className={
+              (route.name === "list" && n.route === "list") ||
+              (route.name === "stats" && n.route === "stats") ||
+              (route.name === "rules" && n.route === "rules")
+                ? "navlink active"
+                : "navlink"
+            }
+          >
+            {n.label}
+          </a>
+        ))}
+        <span className="nav-spacer" />
+        <button className="reset-btn" onClick={resetDemo}>
+          重置演示数据
+        </button>
+      </nav>
+
+      <div className="page-body" key={`${route.name}-${"id" in route ? route.id : ""}`}>
+        {body}
+      </div>
+
+      <footer className="footer">
+        数据仅保存在本浏览器（localStorage），不上传服务器、不引入额外依赖。
+      </footer>
+
+      <ToastHost />
     </main>
   );
 }
 
-export default App;
+function EditRoute({ id }: { id: string }) {
+  const record = listRecords().find((r) => r.id === id) ?? null;
+  if (!record) return <NotFound />;
+  return <CaseEdit record={record} />;
+}
+
+function DetailRoute({ id, role }: { id: string; role: Role }) {
+  const record = listRecords().find((r) => r.id === id) ?? null;
+  if (!record) return <NotFound />;
+  return <CaseDetail record={record} role={role} />;
+}
+
+function NotFound() {
+  return (
+    <section className="panel lock-panel">
+      <h2>病例不存在</h2>
+      <p>该病例可能已被清除，请返回列表查看。</p>
+      <a className="btn btn-primary" href="#/">
+        返回列表
+      </a>
+    </section>
+  );
+}
